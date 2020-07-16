@@ -3,6 +3,8 @@
 
 var fs = require("fs");
 var nodepath = require("path");
+const { setFlagsFromString } = require("v8");
+const { resourceUsage } = require("process");
 
 
 var mygit = module.exports = {
@@ -20,7 +22,7 @@ var mygit = module.exports = {
             //[core]指定git的一些配置如 bare , filemode等
             //[user]指定git使用者的信息
             config: config.objToStr({core: {"" : { bare: opts.bare === true} }}),
-            object: {},
+            objects: {},
             refs:{
                 heads: {},
             }
@@ -40,6 +42,48 @@ var mygit = module.exports = {
         }else{
             addedFiles.forEach(function(p) { mygit.update_index(p, {add: true});})
         }
+    },
+
+    rm: function(path, opts){
+        files.assertInRepo();
+        config.assertNotBare();
+        opts = opts || {};
+
+        var fileToRm = index.matchingFiles(path);
+
+        if(opts.f){
+            throw new Error("unsportted");
+
+        } else if(fileToRm.length === 0){
+            throw new Error(files.pathFromRepoRoot(path)+ "匹配不到文件");
+        } else if(fs.existsSync(path) && fs.statSync(path).isDirectory() && !opts.r) {
+            throw new Error("删除文件夹需要add -r");
+        } else {
+            var changesToRm = util.intersection(diff.addedOrModifiedFiles(), fileToRm);
+            
+        }
+    
+
+    },
+
+    commit: function(opts){
+        files.assertInRepo();
+        config.assertNotBare();
+
+        var treeHash = mygit.write_tree();
+        var headDesc = refs.isHeadDetached() ? "detached HEAD" : refs.headBranchName();
+
+        if(refs.hash("HEAD") !== undefined && 
+            treeHash === objects.treeHash(objects.read(refs.hash("HEAD")))) {
+
+            }
+
+
+    },
+
+    write_tree: function(_){
+        files.assertInRepo();
+        return objects.writeTree(files.nestFlatTree(index.toc()));
     },
 
     update_index: function(path, opts){
@@ -165,6 +209,11 @@ var util = {
             hashInt = hashInt | 0;
         }
         return Math.abs(hashInt).toString(16);
+    },
+
+    //a和b是两个数组
+    intersection: function(a, b){
+        return a.filter(function(e) {b.indexOf(e) !== -1});
     }
 
 }
@@ -179,6 +228,12 @@ var files = {
         if(!files.inRepo()){
             throw new Error("not a git project");
         }
+    },
+
+    nestFlatTree: function(obj) {
+        return Object.keys(obj).reduce(function(tree, wholePath){
+            return util.setIn(tree, wholePath.split(nodepath.sep).concat(obj[wholePath]));
+        }, {})
     },
 
     //读文件
@@ -271,6 +326,12 @@ var index = {
             }, {});
     },
 
+    toc: function(){
+        var idx = index.read();
+        return Object.keys(idx)
+            .reduce(function(obj, k){return util.setIn(obj, k.split(",")[0], idx[k]);}, {});
+    },
+
     key: function(path, stage){
         return path + "," + stage;
     },
@@ -301,13 +362,123 @@ var index = {
         var idx = index.read();
         idx[index.key(path, stage)] = objects.write(content);
         index.write(idx);
+    },
+
+    //用\\替换\，转义两次
+    matchingFiles: function(pathSpec){
+        var searchPath = files.pathFromRepoRoot(pathSpec);
+        return Object.keys(index.toc())
+            .filter(function(p) {return p.match("^" + searchPath.replace(/\\/g, "\\\\"));});
+    },
+
+    toc: function(){
+        var idx = index.read();
+        return Object.keys(idx)
+            .reduce(function(obj, k) {return util.setIn(obj, k.split(",")[0], idx[k]) ;}, {});
     }
 }
 
 var objects = {
     write: function(str){
-        files.write(nodepath.join(files.gitletPath(), "object", util.hash(str)), str);
+        files.write(nodepath.join(files.gitletPath(), "objects", util.hash(str)), str);
         return util.hash(str);
+    },
+
+    writeTree: function(tree) {
+        var treeObject = Object.keys(tree).map(function(key){
+            if(util.isString(tree[key])){
+                return "bolb " + tree[key] + " " + key;
+            } else {
+                return "tree" + objects.writeTree(tree[key]) + " " + key;
+            }
+        }).join("\n") + "\n";
+
+        return objects.write(treeObject);
+    },
+
+    treeHash: function(str){
+        if(objects.type(str) === "commit")
+            return str.split(/\s/)[1];
+    },
+
+    type: function(str){
+        return {commit: "commit", tree: "tree", blob: "tree"}[str.split(" ")[0]] || "blob";
+    },
+
+    read: function(objectHash){
+        if(objectHash !== undefined) {
+            var objectHash = nodepath.join(files.gitletPath(), "objects", objectHash);
+            if(fs.existsSync(objectHash)){
+                return files.read(objectHash);
+            } 
+        }
+    },
+
+    exists: function(objectHash){
+        return objectHash !== undefined && 
+            fs.existsSync(nodepath.join(files.gitletPath(), "objects", objectHash));
+    }
+}
+
+var diff = {
+    addedOrModifiedFiles: function(){
+        var headToc = refs.hash("HEAD")? objects.commitToc(refs.hash("HEAD")) : {};
+        var wc = diff
+    }
+
+}
+
+
+var refs = {
+    //判断是不是分支
+    isRefs: function(ref){
+        return ref !== undefined && 
+            (ref.match("^refs/heads/[A-Za-z-]+$") ||
+            ref.match("^refs/remotes/[A-Za-z-]+/[A-Za-z-]+$") ||
+            ["HEAD", "FETCH_HEAD", "MERGE_HEAD"].indexOf(ref) !== -1);
+    },
+
+    hash: function(refOrHash) {
+        if(objects.exists(refOrHash)){
+            return refOrHash;
+        }else {
+            var terminalRef = refs.terminalRef(refOrHash);
+            if(terminalRef === "FETCH_HEAD"){
+                return refs.fetchHeadBranchToMerge(refs.headBranchName());
+            }else if(refs.exists(terminalRef)){
+                return files.read(files.gitletPath(terminalRef));
+            }
+        }
+    },
+
+    isHeadDetached: function(){
+        return files.read(files.gitletPath("HEAD")).match("refs") === null;
+    },
+
+    fetchHeadBranchToMerge: function(branchName){
+        return util.lines(files.read(files.gitletPath("FETCH_HEAD")))
+            .filter(function(l) { return l.match("^.+ branch " + branchName + " of"); })
+            .map(function(l) { return l.match("^([^ ]+) ")[1]; })[0];
+    },
+
+    headBranchName: function() {
+        if(!refs.isHeadDetached()){
+            return files.read(files.gitletPath("HEAD")).match("refs/heads/(.+)")[1];
+        }
+    },
+
+    terminalRef(ref){
+        if(ref === "HEAD" && !refs.isHeadDetached()) {
+            return files.read(files.gitletPath("HEAD")).match("ref: (refs/heads/.+)")[1];
+        } else if(refs.isRef(ref)){
+            return ref;
+        } else {
+            return refs.toLocateRef(ref);
+        }
+    },
+
+    toLocateRef: function(name) {
+        return "refs/heads" + name;
     }
 }
 
