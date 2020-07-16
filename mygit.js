@@ -3,7 +3,6 @@
 
 var fs = require("fs");
 var nodepath = require("path");
-const { pathToFileURL } = require("url");
 
 
 var mygit = module.exports = {
@@ -112,29 +111,6 @@ var config = {
         }
     },
 
-    // strToObj: function(str){
-    //     return str.split("[")
-    //         .map(function(item) {return item.trim();})
-    //         .filter(function(item) {return item !== "";})
-    //         .reduce(function(c, item){
-    //             var lines = item.split("/n");
-    //             var entry = [];
-
-    //             //split消去了第一个[,所以这里是[1]
-    //             entry.push(lines[0].match(/([^ \]]+)( |\])/)[1]);
-
-    //             var subsectionMatch = lines[0].match(/\"(.+)\"/);
-    //             var subsection = subsectionMatch === null ? "" : subsectionMatch[1];
-    //             entry.push(subsection);
-
-    //             entry.push(lines.slice[1].reduce(function(s, i){
-    //                 s[i.split["="][0].trim()] = i.split["="][1].trim();
-    //                 return s;
-    //             },{}));
-
-    //             return util.setIn(c, entry);
-    //         } ,{ "remote": {}})
-    // }
     strToObj: function(str) {
         return str.split("[")
         .map(function(item) { return item.trim(); })
@@ -311,7 +287,7 @@ var index = {
 
     write: function(index){
         var indexStr = Object.keys(index)
-            .map(function(k) {return k.split(",")[0] + " " + k.split[1] + " " + index[k]})
+            .map(function(k) {return k.split(",")[0] + " " + k.split(",")[1] + " " + index[k]})
             .join("\n") + "\n";
         files.write(files.gitletPath("index"), indexStr);
     },
@@ -330,7 +306,7 @@ var index = {
 
 var objects = {
     write: function(str){
-        files.write(nodepath.join(files.gitletPath(), "objects", util.hash(str)), str);
+        files.write(nodepath.join(files.gitletPath(), "object", util.hash(str)), str);
         return util.hash(str);
     }
 }
