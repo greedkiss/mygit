@@ -413,11 +413,11 @@ var index = {
             .filter(function(p) {return p.match("^" + searchPath.replace(/\\/g, "\\\\"));});
     },
 
-    toc: function(){
+    toc: function() {
         var idx = index.read();
         return Object.keys(idx)
-            .reduce(function(obj, k) {return util.setIn(obj, k.split(",")[0], idx[k]) ;}, {});
-    }
+          .reduce(function(obj, k) { return util.setIn(obj, [k.split(",")[0], idx[k]]); }, {});
+      },
 }
 
 var objects = {
@@ -427,16 +427,16 @@ var objects = {
     },
 
     writeTree: function(tree) {
-        var treeObject = Object.keys(tree).map(function(key){
-            if(util.isString(tree[key])){
-                return "bolb " + tree[key] + " " + key;
-            } else {
-                return "tree" + objects.writeTree(tree[key]) + " " + key;
-            }
+        var treeObject = Object.keys(tree).map(function(key) {
+          if (util.isString(tree[key])) {
+            return "blob " + tree[key] + " " + key;
+          } else {
+            return "tree " + objects.writeTree(tree[key]) + " " + key;
+          }
         }).join("\n") + "\n";
-
+    
         return objects.write(treeObject);
-    },
+      },
 
     //正则表达式\s表示空字符　空格　换行　制表符等
     treeHash: function(str){
