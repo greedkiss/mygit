@@ -3,8 +3,6 @@
 
 var fs = require("fs");
 var nodepath = require("path");
-const { setFlagsFromString } = require("v8");
-const { resourceUsage } = require("process");
 
 
 var mygit = module.exports = {
@@ -18,7 +16,7 @@ var mygit = module.exports = {
 
         var gitletStructure = {
             //当前的Branch
-            HEAD: "ref: refs/head/master\n",
+            HEAD: "ref: refs/heads/master\n",
             //[core]指定git的一些配置如 bare , filemode等
             //[user]指定git使用者的信息
             config: config.objToStr({core: {"" : { bare: opts.bare === true} }}),
@@ -75,15 +73,47 @@ var mygit = module.exports = {
 
         if(refs.hash("HEAD") !== undefined && 
             treeHash === objects.treeHash(objects.read(refs.hash("HEAD")))) {
+                throw new Error("# on" + headDesc + " nothing commit");
+        } else {
+            var conflictedPaths = index.conflictedPaths();
+            if (merge.isMergeInProgress() && conflictedPaths.length > 0) {
+                throw new Error(conflictedPaths.map(function(p) { return "U " + p; }).join("\n") +
+                                "\ncannot commit because you have unmerged files\n");
+            }else{
+                var m = merge.isMergeInProgress() ? files.read(files.gitletPath("MERGE_MSG")) : opts.m;
 
+                var commitHash = objects.writeCommit(treeHash, m, refs.commitParentHashes());
+                mygit.update_ref("HEAD", commitHash);
+                if(merge.isMergeInProgress()) {
+                    fs.unlinkSync(files.gitletPath("MERGE_MSG"));
+                    refs.rm("MERGE_HEAD");
+                    return "Merge made by the three-way strategy";
+                }else {
+                    return "[" + headDesc + " " + commitHash + "]" + m;
+                }
             }
-
-
+        }
     },
 
     write_tree: function(_){
         files.assertInRepo();
         return objects.writeTree(files.nestFlatTree(index.toc()));
+    },
+
+    update_ref: function(refToUpdate, refToUpdateTo, _){
+        files.assertInRepo();
+
+        var hash = refs.hash(refToUpdateTo)
+        if(!objects.exists(hash)){
+            throw new Error("not a valid SHA1");
+        }else if(!refs.isRef(refToUpdate)){
+            throw new Error("cannot lock the ref");
+        }else if(objects.type(objects.read(hash)) !== "commit"){
+            var branch = refs.terminalRef(refToUpdate);
+            throw new Error(branch+" not a commit object");
+        }else{
+            refs.write(refs.terminalRef(refToUpdate), hash);
+        }
     },
 
     update_index: function(path, opts){
@@ -312,6 +342,18 @@ var files = {
 
 
 var index = {
+    conflictedPaths: function(){
+        var idx = index.read();
+        return Object.keys(idx)
+        .filter(function(k) { return index.keyPieces(k).stage === 2; })
+        .map(function(k) { return index.keyPieces(k).path; });
+    },
+
+    keyPieces: function(key) {
+        var pieces = key.split(/,/);
+        return { path: pieces[0], stage: parseInt(pieces[1]) };
+    },
+
     hasFile: function(path, stage){
         return index.read()[index.key(path, stage)] !== undefined;
     },
@@ -396,9 +438,19 @@ var objects = {
         return objects.write(treeObject);
     },
 
+    //正则表达式\s表示空字符　空格　换行　制表符等
     treeHash: function(str){
         if(objects.type(str) === "commit")
             return str.split(/\s/)[1];
+    },
+
+    writeCommit: function(treeHash, message, parentHash){
+        return objects.write("commit "+ treeHash + "\n"
+                            + parentHash
+                                .map(function(h) {return "parent"+ h + "\n";}).join()+
+                                "Date:  " + new Date().toString() + "\n" +
+                                "\n" +
+                                "    " + message + "\n");
     },
 
     type: function(str){
@@ -430,8 +482,21 @@ var diff = {
 
 
 var refs = {
+    commitParentHashes: function() {
+        var headHash = refs.hash("HEAD");
+    
+        if (merge.isMergeInProgress()) {
+          return [headHash, refs.hash("MERGE_HEAD")];
+    
+        } else if (headHash === undefined) {
+          return [];
+        } else {
+          return [headHash];
+        }
+    },
     //判断是不是分支
-    isRefs: function(ref){
+
+    isRef: function(ref){
         return ref !== undefined && 
             (ref.match("^refs/heads/[A-Za-z-]+$") ||
             ref.match("^refs/remotes/[A-Za-z-]+/[A-Za-z-]+$") ||
@@ -448,6 +513,12 @@ var refs = {
             }else if(refs.exists(terminalRef)){
                 return files.read(files.gitletPath(terminalRef));
             }
+        }
+    },
+
+    write: function(ref, content){
+        if(refs.isRef(ref)){
+            files.write(files.gitletPath(nodepath.normalize(ref)),content);
         }
     },
 
@@ -479,6 +550,17 @@ var refs = {
 
     toLocateRef: function(name) {
         return "refs/heads" + name;
+    },
+
+    exists: function(ref){
+        return refs.isRef(ref) && fs.existsSync(files.gitletPath(ref));
+    },
+
+}
+
+var merge = {
+    isMergeInProgress: function(){
+        return refs.hash("MERGE_HEAD");
     }
 }
 
