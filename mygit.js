@@ -3,6 +3,7 @@
 
 var fs = require("fs");
 var nodepath = require("path");
+const { EROFS } = require("constants");
 
 
 var mygit = module.exports = {
@@ -92,6 +93,24 @@ var mygit = module.exports = {
                     return "[" + headDesc + " " + commitHash + "]" + m;
                 }
             }
+        }
+    },
+
+    branch: function(name, opts){
+        files.assertInRepo();
+        opts = opts || {};
+
+        //返回的是当前所有的分支,活动分支用*标记
+        if(name == undefined){
+            return Object.keys(refs.localHeads()).map(function(branch){
+                return (branch === refs.headBranchName() ? "* " : " ") + branch;
+            }).join("\n") + "\n";
+        }else if(refs.hash("HEAD") === undefined){
+            throw new Error("project has no commit");
+        }else if(refs.exists(refs.toLocateRef(name))){
+            throw new Error("branch "+ name + " have already exited");
+        }else {
+            mygit.update_ref(refs.toLocateRef(name), refs.hash("HEAD"));
         }
     },
 
@@ -494,6 +513,14 @@ var refs = {
           return [headHash];
         }
     },
+
+    //返回本地分支的名称和hash（commit类型）
+    localHeads: function(){
+        return fs.readdirSync(nodepath.join(files.gitletPath(), "refs", "heads"))
+            .reduce(function(o, n){
+                return util.setIn(o, [n, refs.hash(n)]);
+            }, {});
+    },
     //判断是不是分支
 
     isRef: function(ref){
@@ -503,6 +530,7 @@ var refs = {
             ["HEAD", "FETCH_HEAD", "MERGE_HEAD"].indexOf(ref) !== -1);
     },
 
+    //返回commit类型的sha1值
     hash: function(refOrHash) {
         if(objects.exists(refOrHash)){
             return refOrHash;
@@ -538,6 +566,7 @@ var refs = {
         }
     },
 
+    //返回ref的相对于.gitlet的路径
     terminalRef(ref){
         if(ref === "HEAD" && !refs.isHeadDetached()) {
             return files.read(files.gitletPath("HEAD")).match("ref: (refs/heads/.+)")[1];
@@ -549,7 +578,7 @@ var refs = {
     },
 
     toLocateRef: function(name) {
-        return "refs/heads" + name;
+        return "refs/heads/" + name;
     },
 
     exists: function(ref){
