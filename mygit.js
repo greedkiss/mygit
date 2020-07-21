@@ -3,7 +3,6 @@
 
 var fs = require("fs");
 var nodepath = require("path");
-const { EROFS, EOPNOTSUPP } = require("constants");
 
 
 var mygit = module.exports = {
@@ -127,7 +126,23 @@ var mygit = module.exports = {
         }else if(ref === refs.headBranchName() || ref === files.read(files.gitletPath("HEAD"))){
             return "already on " + ref;
         }else {
-            var paths = diff.changeFilesCommitWouldOverWrite()
+            var paths = diff.changeFilesCommitWouldOverWrite(toHash);
+            if(paths.length>0){
+                throw new Error("current branch hash been changed, if you change to another branch you will lose it");
+            }else {
+                //变更当前工作目录
+                process.chdir(files.workingCopyPath());
+                
+                var isDetachingHead = objects.exists(ref);
+
+                workingCopy.write(diff.diff(refs.hash("HEAD"), toHash));
+                refs.write("HEAD", isDetachingHead? toHash : "ref "+ refs.toLocateRef(ref));
+                index.write(index.tocToIndex(objects.commitToc(toHash)));
+
+                return isDetachingHead? 
+                    "Note: checking out " + toHash + "\nYou are in detached HEAD state." :
+                    "Switched to branch " + ref;
+            }
         }
 
 
@@ -283,6 +298,13 @@ var util = {
     //a和b是两个数组
     intersection: function(a, b){
         return a.filter(function(e) {b.indexOf(e) !== -1});
+    },
+
+    //去掉arr中的重复元素
+    unique: function(arr){
+        return arr.reduce(function(a, b) {
+            return a.indexof(b) === -1 ? a.concat(b) : a;
+        }, {})
     }
 
 }
@@ -374,9 +396,30 @@ var files = {
                 return fileList.concat(files.lsRecurisive(nodepath.join(path, dirChild)));
             }, []);
         }
+    },
+
+    flattenNestedTree: function(tree, obj, prefix){
+        if(obj == undefined) {return files.flattenNestedTree(tree, {}, "")};
+
+        Object.keys(tree).forEach(function(dir){
+            var path = nodepath.join(prefix, dir);
+            if(util.isString(tree[dir])){
+                obj[path] = tree[dir];
+            }else {
+                files.flattenNestedTree(tree[dir], obj, path);
+            }
+        });
+        return obj;
+    },
+
+    rmEmptyDirs: function(path) {
+        if (fs.statSync(path).isDirectory()) {
+          fs.readdirSync(path).forEach(function(c) { files.rmEmptyDirs(nodePath.join(path, c)); });
+          if (fs.readdirSync(path).length === 0) {
+            fs.rmdirSync(path);
+          }
+        }
     }
-
-
 }
 
 
@@ -456,7 +499,32 @@ var index = {
         var idx = index.read();
         return Object.keys(idx)
           .reduce(function(obj, k) { return util.setIn(obj, [k.split(",")[0], idx[k]]); }, {});
-      },
+    },
+
+    flattenNestedTree: function(tree, obj, prefix){
+        if(obj === undefined) {return files.flattenNestedTree(tree, {}, "");}
+
+        Object.keys(tree).forEach(function(dir) {
+            var path = nodepath.join(prefix, dir);
+            if(util.isString(tree[dir])){
+                obj[path] = tree[dir];
+            } else {
+                files.flattenNestedTree(tree[dir], obj, path);
+            }
+        })
+        return obj;
+    },
+
+    //返回idx[name]: hash
+    workingCopyToc: function(){
+       return Object.keys(index.read())
+            .map(function(k) { return k.split(",")[0]; }) //取name
+            .filter(function(p) { return fs.existsSync(files.workingCopyPath(p)); }) //判断文件是否存在
+            .reduce(function(idx, p) {
+                idx[p] = util.hash(files.read(files.workingCopyPath(p)))
+                return idx;
+            }, {});
+    }
 }
 
 var objects = {
@@ -545,10 +613,51 @@ var diff = {
             .filter(function(p) {return dif[p].status !== diff.FILE_STATUS.SAME; })
             .reduce(function(ns, p) {return util.setIn(ns, [p, dif[p].status]); }, {});
     },
+
     diff: function(hash1, hash2){
         var a = hash1 === undefined ? index.toc() : objects.commitToc(hash1);
         var b = hash2 === undefined ? index.workingCopyToc() : objects.commitToc(hash2);
         return diff.tocDiff(a, b);
+    },
+
+    tocDiff: function(receiver, giver, base){
+        function fileStatus(receiver, giver, base){
+            var receiverPresent = receiver !== undefined;
+            var basePresent = base !== undefined;
+            var giverPresent = giver !== undefined;
+            if(receiverPresent && giverPresent && receiver !== giver){
+                if(receiver !== base && giver !== base){
+                    return diff.FILE_STATUS.CONFLICT;
+                }else {
+                    return diff.FILE_STATUS.MODIFY;
+                }
+            } else if(receiver === giver){
+                    return diff.FILE_STATUS.SAME;
+            } else if ((!receiverPresent && !basePresent && giverPresent) ||
+                        (receiverPresent && !basePresent && !giverPresent)) {
+                    return diff.FILE_STATUS.ADD;
+            } else if ((receiverPresent && basePresent && !giverPresent) ||
+                        (!receiverPresent && basePresent && giverPresent)) {
+                    return diff.FILE_STATUS.DELETE;
+            }
+        };
+
+        base = base || receiver;
+
+        //得到一个包含所有版本的所有路径
+        var paths = Object.keys(receiver).concat(Object.keys(base)).concat(Objects.keys(giver));
+
+        //receiver[p]是该文件的hash值，所以他是比hash值
+        //但是此次项目不是根据内容来算hash的，是根据文件长度来算hash的
+        //so attention
+        return util.unique(paths).reduce(function(idx, p){
+            return util.setIn(idx, [p, {
+                status: fileStatus(receiver[p], giver[p], base[p]),
+                receiver: receiver[p],
+                base: base[p],
+                giver: giver[p]
+            }]);
+        },{});
     }
 }
 
@@ -645,6 +754,54 @@ var merge = {
         return refs.hash("MERGE_HEAD");
     }
 }
+
+var workingCopy = {
+
+    // **write()** takes a diff object (see the diff module for a
+    // description of the format) and applies the changes in it to the
+    // working copy.
+    write: function(dif) {
+  
+      // `composeConflict()` takes the hashes of two versions of the
+      // same file and returns a string that represents the two versions
+      // as a conflicted file:
+      // <pre><<<<<
+      // version1
+      // `======
+      // version2
+      // `>>>>></pre>
+      // Note that Gitlet, unlike real Git, does not do a line by line
+      // diff and mark only the conflicted parts of the file.  If a file
+      // is in conflict, the whole body of the file is marked as one big
+      // conflict.
+      function composeConflict(receiverFileHash, giverFileHash) {
+        return "<<<<<<\n" + objects.read(receiverFileHash) +
+          "\n======\n" + objects.read(giverFileHash) +
+          "\n>>>>>>\n";
+      };
+  
+      // Go through all the files that have changed, updating the
+      // working copy for each.
+      Object.keys(dif).forEach(function(p) {
+        if (dif[p].status === diff.FILE_STATUS.ADD) {
+          files.write(files.workingCopyPath(p), objects.read(dif[p].receiver || dif[p].giver));
+        } else if (dif[p].status === diff.FILE_STATUS.CONFLICT) {
+          files.write(files.workingCopyPath(p), composeConflict(dif[p].receiver, dif[p].giver));
+        } else if (dif[p].status === diff.FILE_STATUS.MODIFY) {
+          files.write(files.workingCopyPath(p), objects.read(dif[p].giver));
+        } else if (dif[p].status === diff.FILE_STATUS.DELETE) {
+          fs.unlinkSync(files.workingCopyPath(p));
+        }
+      });
+  
+      // Remove any directories that have been left empty after the
+      // deletion of all the files in them.
+      fs.readdirSync(files.workingCopyPath())
+        .filter(function(n) { return n !== ".gitlet"; })
+        .forEach(files.rmEmptyDirs);
+    }
+  };
+    
 
 //处理脚本参数，opts如下
 // {
