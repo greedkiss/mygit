@@ -290,6 +290,49 @@ var mygit = module.exports = {
         return status.toString();
     },
 
+    clone: function(remotePath, targetPath, opts){
+        opts = opts || {};
+
+        if(remotePath === undefined || targetPath === undefined){
+            throw new Error("未指明原目的");
+        }else if (!fs.existsSync(remotePath) || !util.onRemote(remotePath)(files.inRepo)) {
+            throw new Error("repository " + remotePath + " does not exist");
+        } else if (fs.existsSync(targetPath) && fs.readdirSync(targetPath).length > 0) {
+            throw new Error(targetPath + " already exists and is not empty");
+      
+          // Otherwise, do the clone.
+        }else{
+            remotePath = nodePath.resolve(process.cwd(), remotePath);
+
+            // If `targetPath` doesn't exist, create it.
+            if (!fs.existsSync(targetPath)) {
+              fs.mkdirSync(targetPath);
+            }
+            util.onRemote(targetPath)(function() {
+
+                // Initialize the directory as a Gitlet repository.
+                mygit.init(opts);
+        
+                // Set up `remotePath` as a remote called "origin".
+                mygit.remote("add", "origin", nodePath.relative(process.cwd(), remotePath));
+        
+                // Get the hash of the commit that master is pointing at on
+                // the remote repository.
+                var remoteHeadHash = util.onRemote(remotePath)(refs.hash, "master");
+        
+                // If the remote repo has any commits, that hash will exist.
+                // The new repository records the commit that the passed
+                // `branch` is at on the remote.  It then sets master on the
+                // new repository to point at that commit.
+                if (remoteHeadHash !== undefined) {
+                  mygit.fetch("origin", "master");
+                  merge.writeFastForwardMerge(undefined, remoteHeadHash);
+                }
+              });
+              return "cloning into" + targetPath;
+        } 
+    },
+
     write_tree: function(_){
         files.assertInRepo();
         return objects.writeTree(files.nestFlatTree(index.toc()));
