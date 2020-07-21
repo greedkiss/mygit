@@ -3,7 +3,7 @@
 
 var fs = require("fs");
 var nodepath = require("path");
-const { EROFS } = require("constants");
+const { EROFS, EOPNOTSUPP } = require("constants");
 
 
 var mygit = module.exports = {
@@ -112,6 +112,25 @@ var mygit = module.exports = {
         }else {
             mygit.update_ref(refs.toLocateRef(name), refs.hash("HEAD"));
         }
+    },
+
+    checkout: function(ref, _){
+        files.assertInRepo();
+        config.assertNotBare();
+        
+        var toHash = refs.hash(ref);
+
+        if(objects.exists(toHash)){
+            throw new Error(ref + " match nothing file");
+        }else if(objects.type(objects.read(toHash)) !== "commit"){
+            throw new Error(ref + "必须是commit类型");
+        }else if(ref === refs.headBranchName() || ref === files.read(files.gitletPath("HEAD"))){
+            return "already on " + ref;
+        }else {
+            var paths = diff.changeFilesCommitWouldOverWrite()
+        }
+
+
     },
 
     write_tree: function(_){
@@ -247,6 +266,7 @@ var util = {
         return typeof thing === "string";
     },
 
+    //返回不为空的数组项
     lines: function(str){
         return str.split("\n").filter(function(l) { return l !== "";})
     },
@@ -488,15 +508,48 @@ var objects = {
     exists: function(objectHash){
         return objectHash !== undefined && 
             fs.existsSync(nodepath.join(files.gitletPath(), "objects", objectHash));
+    },
+
+    commitToc: function(hash){
+        return files.flattenNestedTree(objects.fileTree(objects.treeHash(objects.read(hash))));
+    },
+
+    fileTree: function(treeHash, tree){
+        if(tree === undefined ){return objects.fileTree(treeHash, {});}
+
+        util.lines(objects.read(treeHash)).forEach(function(line){
+            var lineTokens = line.split(/ /);
+            tree[lineTokens[2]] = lineTokens[0] === "tree" ? 
+                objects.fileTree(lineTokens[1], {}) :
+                lineTokens[1];
+        });
+        return tree;
     }
 }
 
 var diff = {
+    FILE_STATUS: {ADD: "A", MODIFY: "M", DELETE: "D", SAME: "SAME", CONFLICT: "CONFLICT"},
     addedOrModifiedFiles: function(){
         var headToc = refs.hash("HEAD")? objects.commitToc(refs.hash("HEAD")) : {};
         var wc = diff
-    }
+    },
 
+    changeFilesCommitWouldOverWrite: function(hash){
+        var headHash = refs.hash("HEAD");
+        return util.intersection(Object.keys(diff.nameStatus(diff.diff(headHash))),
+                                 Object.keys(diff.nameStatus(diff.diff(headHash, hash))));
+    },
+
+    nameStatus: function(dif){
+        return Object.keys(dif)
+            .filter(function(p) {return dif[p].status !== diff.FILE_STATUS.SAME; })
+            .reduce(function(ns, p) {return util.setIn(ns, [p, dif[p].status]); }, {});
+    },
+    diff: function(hash1, hash2){
+        var a = hash1 === undefined ? index.toc() : objects.commitToc(hash1);
+        var b = hash2 === undefined ? index.workingCopyToc() : objects.commitToc(hash2);
+        return diff.tocDiff(a, b);
+    }
 }
 
 
