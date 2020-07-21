@@ -119,13 +119,13 @@ var mygit = module.exports = {
         
         var toHash = refs.hash(ref);
 
-        if(objects.exists(toHash)){
+        if(!objects.exists(toHash)){
             throw new Error(ref + " match nothing file");
         }else if(objects.type(objects.read(toHash)) !== "commit"){
             throw new Error(ref + "必须是commit类型");
         }else if(ref === refs.headBranchName() || ref === files.read(files.gitletPath("HEAD"))){
             return "already on " + ref;
-        }else {
+    }else {
             var paths = diff.changeFilesCommitWouldOverWrite(toHash);
             if(paths.length>0){
                 throw new Error("current branch hash been changed, if you change to another branch you will lose it");
@@ -303,8 +303,8 @@ var util = {
     //去掉arr中的重复元素
     unique: function(arr){
         return arr.reduce(function(a, b) {
-            return a.indexof(b) === -1 ? a.concat(b) : a;
-        }, {})
+            return a.indexOf(b) === -1 ? a.concat(b) : a;
+        }, [])
     }
 
 }
@@ -414,10 +414,10 @@ var files = {
 
     rmEmptyDirs: function(path) {
         if (fs.statSync(path).isDirectory()) {
-          fs.readdirSync(path).forEach(function(c) { files.rmEmptyDirs(nodePath.join(path, c)); });
-          if (fs.readdirSync(path).length === 0) {
-            fs.rmdirSync(path);
-          }
+            fs.readdirSync(path).forEach(function(c) { files.rmEmptyDirs(nodePath.join(path, c)); });
+            if (fs.readdirSync(path).length === 0) {
+                fs.rmdirSync(path);
+            }
         }
     }
 }
@@ -524,7 +524,13 @@ var index = {
                 idx[p] = util.hash(files.read(files.workingCopyPath(p)))
                 return idx;
             }, {});
-    }
+    },
+
+    // stage `0`.  eg: `{ "file1,0": hash(1), "src/file2,0": hash(2) }'
+    tocToIndex: function(toc) {
+        return Object.keys(toc)
+        .reduce(function(idx, p) { return util.setIn(idx, [index.key(p, 0), toc[p]]); }, {});
+    },
 }
 
 var objects = {
@@ -645,7 +651,7 @@ var diff = {
         base = base || receiver;
 
         //得到一个包含所有版本的所有路径
-        var paths = Object.keys(receiver).concat(Object.keys(base)).concat(Objects.keys(giver));
+        var paths = Object.keys(receiver).concat(Object.keys(base)).concat(Object.keys(giver));
 
         //receiver[p]是该文件的hash值，所以他是比hash值
         //但是此次项目不是根据内容来算hash的，是根据文件长度来算hash的
