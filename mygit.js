@@ -234,10 +234,18 @@ var mygit = module.exports = {
 
                 if(merge.hasConflicts(receiverHash, giverHash)){
                     return "failed. fix the conflict";
+                }else{
+                    return mygit.commit();
                 }
-                
             }
         }
+    },
+
+    pull: function(remote, branch, _){
+        files.assertInRepo();
+        config.assertNotBare();
+        mygit.fetch(remote, brach);
+        return mygit.merge("FETCH_HEAD");
     },
 
     write_tree: function(_){
