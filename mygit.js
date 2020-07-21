@@ -3,6 +3,7 @@
 
 var fs = require("fs");
 var nodepath = require("path");
+const { rejects } = require("assert");
 
 
 var mygit = module.exports = {
@@ -70,7 +71,6 @@ var mygit = module.exports = {
 
         var treeHash = mygit.write_tree();
         var headDesc = refs.isHeadDetached() ? "detached HEAD" : refs.headBranchName();
-
         if(refs.hash("HEAD") !== undefined && 
             treeHash === objects.treeHash(objects.read(refs.hash("HEAD")))) {
                 throw new Error("# on" + headDesc + " nothing commit");
@@ -81,7 +81,6 @@ var mygit = module.exports = {
                                 "\ncannot commit because you have unmerged files\n");
             }else{
                 var m = merge.isMergeInProgress() ? files.read(files.gitletPath("MERGE_MSG")) : opts.m;
-
                 var commitHash = objects.writeCommit(treeHash, m, refs.commitParentHashes());
                 mygit.update_ref("HEAD", commitHash);
                 if(merge.isMergeInProgress()) {
@@ -136,7 +135,7 @@ var mygit = module.exports = {
                 var isDetachingHead = objects.exists(ref);
 
                 workingCopy.write(diff.diff(refs.hash("HEAD"), toHash));
-                refs.write("HEAD", isDetachingHead? toHash : "ref "+ refs.toLocateRef(ref));
+                refs.write("HEAD", isDetachingHead? toHash : "ref: "+ refs.toLocateRef(ref));
                 index.write(index.tocToIndex(objects.commitToc(toHash)));
 
                 return isDetachingHead? 
@@ -161,6 +160,84 @@ var mygit = module.exports = {
             .map(function(path) { return nameToStatus[path] + " " + path;})
             .join("\n") + "\n";
        }
+    },
+
+    remote: function(command, name, path, _){
+        files.assertInRepo();
+
+        if(command !== "add"){
+            throw new Error("command wrong you fool");
+        }else if(name in config.read()["remote"]){
+            throw new Error("remote " + name  + " already exits");
+        } else {
+            config.write(util.setIn(config.read(), ["remote", name, "url", path]));
+            return "\n";
+        }
+    },
+
+    fetch: function(remote, branch, _){
+        files.assertInRepo();
+
+        if(remote === undefined || branch === undefined){
+            throw new Error("error dump!");
+        }else if(!(remote in config.read()[remote])){
+            throw new Error("you must have remote when fetch");
+        }else {
+            var remoteUrl = config.read().remote.url;
+
+            var remoteRef = refs.toRemoteRef(remote, branch);
+            var newHash = util.onRemote(remoteUrl)(refs.hash, branch);
+
+            if(newHash === undefined){
+                throw new Error("remote ref can't find");
+            } else {
+                var oldHash = refs.hash(remoteRef);
+
+                //从remote读并写入
+                var remoteObjects = util.onRemote(remoteUrl)(objects.allObjects);
+                remoteObjects.forEach(objects.write);
+                
+                mygit.update_ref(remoteRef, newHash);
+                refs.write("FETCH_HEAD", newHash + " branch" + branch + " of" + remoteUrl);
+
+                return ["From " + remoteUrl,
+                "Count " + remoteObjects.length,
+                branch + " -> " + remote + "/" + branch +
+                (merge.isAForceFetch(oldHash, newHash) ? " (forced)" : "")].join("\n") + "\n";
+            }
+        }
+    },
+
+    merge: function(ref, _){
+        files.assertInRepo();
+        config.assertNotBare();
+
+        var receiverHash = refs.hash("HEAD");
+
+        var giverHash = refs.hash(ref);
+
+        if(refs.isHeadDetached()){
+            throw new Error("unsportted");
+        }else if(giverHash === undefined || objects.type(objects.read(giverHash)) != "commit"){
+            throw new Error(ref + "需要是commit类型");
+        }else if(objects.isUpToDate(receiverHash, giverHash)){
+            return "已经更新";
+        }else {
+            var paths = diff.changeFilesCommitWouldOverWrite(giverHash);
+            if(paths.length>0){
+                throw new Error("you fool ,you forget commit when you merge sth");
+            }else if(merge.canFastForward(receiverHash, giverHash)){
+                merge.writeFastForwardMerge(receiverHash, giverHash)
+                return "Fast-forward";
+            }else{
+                merge.writeNonFastForwardMerge(receiverHash, giverHash, ref);
+
+                if(merge.hasConflicts(receiverHash, giverHash)){
+                    return "failed. fix the conflict";
+                }
+                
+            }
+        }
     },
 
     write_tree: function(_){
@@ -320,8 +397,24 @@ var util = {
         return arr.reduce(function(a, b) {
             return a.indexOf(b) === -1 ? a.concat(b) : a;
         }, [])
-    }
+    },
 
+    //func.apply(thisarg, [argsarry])
+    onRemote: function(remotePath){
+        return function(fn) {
+            var originalDir = process.cwd();
+            process.chdir(remotePath);
+            var result = fn.apply(null, Array.prototype.slice.call(arguments, 1));
+            process.chdir(originalDir);
+            return result;
+        }
+    },
+
+    flatten: function(arr) {
+        return arr.reduce(function(a, e) {
+          return a.concat(e instanceof Array ? util.flatten(e) : e);
+        }, []);
+    },
 }
 
 
@@ -531,6 +624,8 @@ var index = {
     },
 
     //返回idx[name]: hash
+    //当前工作目录的filename: hash
+    //经常与commit的hash做比较来判断是否更新文件
     workingCopyToc: function(){
        return Object.keys(index.read())
             .map(function(k) { return k.split(",")[0]; }) //取name
@@ -546,12 +641,26 @@ var index = {
         return Object.keys(toc)
         .reduce(function(idx, p) { return util.setIn(idx, [index.key(p, 0), toc[p]]); }, {});
     },
+
+    writeConflict: function(path, receiverContent, giverContent, baseContent){
+        if(baseContent !== undefined){
+            index._writeStageEntry(path, 1, baseContent);
+        }
+        index._writeStageEntry(path, 2, receiverContent);
+
+        index._writeStageEntry(path, 3, giverContent);
+    }
 }
 
 var objects = {
     write: function(str){
         files.write(nodepath.join(files.gitletPath(), "objects", util.hash(str)), str);
         return util.hash(str);
+    },
+
+    isUpToDate: function(receiverHash, giverHash){
+        return receiverHash !== undefined && 
+            (receiverHash === giverHash || objects.isAncestor(receiverHash, giverHash));
     },
 
     writeTree: function(tree) {
@@ -575,7 +684,7 @@ var objects = {
     writeCommit: function(treeHash, message, parentHash){
         return objects.write("commit "+ treeHash + "\n"
                             + parentHash
-                                .map(function(h) {return "parent"+ h + "\n";}).join()+
+                                .map(function(h) {return "parent "+ h + "\n";}).join()+
                                 "Date:  " + new Date().toString() + "\n" +
                                 "\n" +
                                 "    " + message + "\n");
@@ -599,6 +708,7 @@ var objects = {
             fs.existsSync(nodepath.join(files.gitletPath(), "objects", objectHash));
     },
 
+    //当前hash的filename: hash
     commitToc: function(hash){
         return files.flattenNestedTree(objects.fileTree(objects.treeHash(objects.read(hash))));
     },
@@ -613,14 +723,36 @@ var objects = {
                 lineTokens[1];
         });
         return tree;
-    }
+    },
+
+    allObjects: function(){
+        return fs.readdirSync(fils.gitletPath("objects")).map(objects.read);
+    },
+
+    isAncestor: function(descendentHash, ancestorHash) {
+        return objects.ancestors(descendentHash).indexOf(ancestorHash) !== -1;
+    },
+    
+    parentHashes: function(str) {
+        if (objects.type(str) === "commit") {
+          return str.split("\n")
+            .filter(function(line) { return line.match(/^parent/); })
+            .map(function(line) { return line.split(" ")[1]; });
+        }
+    },
+
+    ancestors: function(commitHash) {
+        var parents = objects.parentHashes(objects.read(commitHash));
+        return util.flatten(parents.concat(parents.map(objects.ancestors)));
+    },
 }
 
 var diff = {
     FILE_STATUS: {ADD: "A", MODIFY: "M", DELETE: "D", SAME: "SAME", CONFLICT: "CONFLICT"},
     addedOrModifiedFiles: function(){
         var headToc = refs.hash("HEAD")? objects.commitToc(refs.hash("HEAD")) : {};
-        var wc = diff
+        var wc = diff.nameStatus(diff.tocDiff(headToc, index.workingCopyToc()));
+        return Object.keys(wc).filter(function(p) { return wc[p] !== diff.FILE_STATUS.DELETE; });
     },
 
     changeFilesCommitWouldOverWrite: function(hash){
@@ -641,6 +773,7 @@ var diff = {
         return diff.tocDiff(a, b);
     },
 
+    //core part!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     tocDiff: function(receiver, giver, base){
         function fileStatus(receiver, giver, base){
             var receiverPresent = receiver !== undefined;
@@ -768,12 +901,101 @@ var refs = {
         return refs.isRef(ref) && fs.existsSync(files.gitletPath(ref));
     },
 
+    toRemoteRef: function(remote, name){
+        return "refs/remote/"+ remote + "/" + name;
+    }
+
 }
 
 var merge = {
     isMergeInProgress: function(){
         return refs.hash("MERGE_HEAD");
+    },
+
+    isAForceFetch: function(receiverHash, giverHash){
+        return receiverHash !== undefined && !objects.isAncestor(giverHash, receiverHash);
+    },
+
+    //当receiver未定义也就是没有commit
+    //或者they have relations
+    //返回true
+    canFastForward: function(receiverHash, giverHash){
+        return receiverHash === undefined || objects.isAncestor(giverHash, receiverHash);
+    },
+
+    writeFastForwardMerge: function(receiverHash, giverHash){
+        //在refs/heads/master写上当前的hash
+        refs.write(refs.toLocateRef(refs.headBranchName()), giverHash);
+        //在index写下当前文件的新hash
+        index.write(index.tocToIndex(objects.commitToc(giverHash)));
+        if(!config.isBare()){
+            var receiverToc = receiverHash === undefined ? {} : objects.commitToc(receiverHash);
+
+            workingCopy.write(diff.tocDiff(receiverToc, objects.commitToc(giverHash)));
+        }
+
+    },
+
+    writeNonFastForwardMerge: function(receiverHash, giverHash, giverRef){
+        //创建新文件MERGE_HEAD
+        refs.write("MERGE_HEAD", giverHash);
+
+        merge.writeMergeMsg(receiverHash, giverHash, giverRef);
+
+        merge.writeIndex(receiverHash, giverHash);
+        if(!config.isBare()){
+            workingCopy.write(merge.mergeDiff(receiverHash, giverHash));
+        }
+
+    },
+
+    writeIndex: function(receiverHash, giverHash){
+        var mergeDiff = merge.mergeDiff(receiverHash, giverHash);
+        index.write({});
+        Object.keys(mergeDiff).forEach(function(p){
+            if(mergeDiff[p].status == diff.FILE_STATUS.CONFLICT){
+                index.writeConflict(p, 
+                                    objects.read(mergeDiff[p].receiver),
+                                    objects.read(mergeDiff[p].giver),
+                                    objects.read(mergeDiff[p].base));
+            }
+        })
+    },
+
+    writeMergeMsg: function(receiverHash, giverHash, ref){
+        var msg = "Merge "+ ref + " into  "+ refs.headBranchName();
+
+        var mergeDiff = merge.mergeDiff(receiverHash, giverHash);
+        var conflicts = objects.keys(mergeDiff)
+            .filter(function(p) { return mergeDiff[p].status === diff.FILE_STATUS.CONFLICT});
+        if(conflicts.length >0){
+            msg += "\nConflicts:\n"+ conflicts.join("\n");
+        }
+        files.write(files.gitletPath("MERGE_MSG"), msg);
+    },
+
+    //amazing!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    mergeDiff: function(receiverHash, giverHash){
+        return diff.tocDiff(objects.commitToc(receiverHash),
+                            objects.commitToc(giverHash),
+                            objects.commitToc(merge.commonAncestor(receiverHash, giverHash)));
+    },
+
+    commonAncestor: function(aHash , bHash){
+        var sorted = [aHash, bHash].sort();
+        aHash = sorted[0];
+        bHash = sorted[1];
+        var aAncestors = [aHash].concat(objects.ancestors(aHash));
+        var bAncestors = [bHash].concat(objects.ancestors(bHash));
+        return util.intersection(aAncestors, bAncestors);
+    },
+
+    hasConflicts: function(receiverHash, giverHash) {
+        var mergeDiff = merge.mergeDiff(receiverHash, giverHash);
+        return Object.keys(mergeDiff)
+          .filter(function(p){return mergeDiff[p].status===diff.FILE_STATUS.CONFLICT }).length > 0
     }
+
 }
 
 var workingCopy = {

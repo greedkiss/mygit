@@ -7,3 +7,26 @@ mygit branch
 mygit branch [new branch]
 mygit checkout [new branch]
 ```
+>最重要的一个部分
+```
+function fileStatus(receiver, giver, base){
+    var receiverPresent = receiver !== undefined;
+    var basePresent = base !== undefined;
+    var giverPresent = giver !== undefined;
+    if(receiverPresent && giverPresent && receiver !== giver){
+        if(receiver !== base && giver !== base){
+            return diff.FILE_STATUS.CONFLICT;
+        }else {
+            return diff.FILE_STATUS.MODIFY;
+        }
+    } else if(receiver === giver){
+            return diff.FILE_STATUS.SAME;
+    } else if ((!receiverPresent && !basePresent && giverPresent) ||
+                (receiverPresent && !basePresent && !giverPresent)) {
+            return diff.FILE_STATUS.ADD;
+    } else if ((receiverPresent && basePresent && !giverPresent) ||
+                (!receiverPresent && basePresent && giverPresent)) {
+            return diff.FILE_STATUS.DELETE;
+    }
+};
+```
