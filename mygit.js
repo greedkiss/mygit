@@ -248,6 +248,43 @@ var mygit = module.exports = {
         return mygit.merge("FETCH_HEAD");
     },
 
+    push: function(remote, branch, opts){
+        files.assertInRepo();
+        opts = opts || {};
+
+        if(remote === undefined || branch === undefined) {
+            throw new Error("unsportted");
+        }else if(!(remote in config.read().remote)){
+            throw new Error(remote+"do not exist");
+        }else {
+            var remotePath = config.read().remote[remote].url;
+            var remoteCall = util.onRemote(remotePath);
+
+            if(remoteCall (refs.isCheckedOut, branch)){
+                throw new Error("refusing to update checked out branch " + branch);
+            } else {
+                var receiverHash = remoteCall(refs.hash, branch);
+
+                var giverHash = refs.hash(brach);
+
+                if(objects.isUpToDate(receiverHash, giverHash)){
+                    return "already update";
+                }else if(!opts.f && !merge.canFastForward(receiverHash, giverHash)){
+                    throw new Error("failed to load"+ remotePath);
+                }else {
+                    remoteCall(gitlet.update_ref, refs.toLocalRef(branch), giverHash);
+
+                    mygit.update_ref(refs.toRemoteRef(remote, branch), giverHash);
+          
+                    return ["To " + remotePath,
+                            "Count " + objects.allObjects().length,
+                            branch + " -> " + branch].join("\n") + "\n";
+                }
+
+            }
+        }
+    },
+
     write_tree: function(_){
         files.assertInRepo();
         return objects.writeTree(files.nestFlatTree(index.toc()));
@@ -838,6 +875,9 @@ var refs = {
         }
     },
 
+    isCheckedOut: function(branch) {
+        return !config.isBare() && refs.headBranchName() === branch;
+    },
     //返回本地分支的名称和hash（commit类型）
     localHeads: function(){
         return fs.readdirSync(nodepath.join(files.gitletPath(), "refs", "heads"))
