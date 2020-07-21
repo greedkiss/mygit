@@ -5,4 +5,5 @@ mygit add a.txt
 mygit commit -m "message"
 mygit branch
 mygit branch [new branch]
+mygit checkout [new branch]
 ```
