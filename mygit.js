@@ -144,8 +144,23 @@ var mygit = module.exports = {
                     "Switched to branch " + ref;
             }
         }
+    },
 
+    diff: function(ref1, ref2, opts){
+        files.assertInRepo();
+        config.assertNotBare();
 
+       if(ref1 !== undefined && ref1.hash(ref1) === undefined){
+           throw new Error("argument 1 has problems");
+       } else if(ref2 !== undefined && refs.hash(ref2 === undefined)){
+           throw new Error("argument 2 has problems");
+       } else {
+           var nameToStatus = diff.nameStatus(diff.diff(refs.hash(ref1), refs.hash(ref2)));
+
+           return Object.keys(nameToStatus)
+            .map(function(path) { return nameToStatus[path] + " " + path;})
+            .join("\n") + "\n";
+       }
     },
 
     write_tree: function(_){
