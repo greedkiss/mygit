@@ -6,6 +6,12 @@ mygit commit -m "message"
 mygit branch
 mygit branch [new branch]
 mygit checkout [new branch]
+mygit remote add a ../a
+mygit fetch a master
+mygit merge FETCH_HEAD
+mygit pull a master
+mygit clone a b
+mygit push a master
 ```
 >最重要的一个部分
 ```
